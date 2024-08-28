@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# run ipecmd like it was a command :unamused:
+#
+# usage: ipecmd -?
+#
+
+# find MPLAB IPE installation using desktop file
+DFILE=""
+DSRCH="/usr/share/applications/mplab_ipe*desktop"
+for f in $DSRCH ; do
+  if [ -e "$f" ] ; then 
+    # keep last one found
+    DFILE="$f"
+  fi
+done
+if [ -e "$DFILE" ] ; then
+  GUEXEC=$( fgrep "Exec=" "$DFILE" | cut -d "=" -f 2 )
+  if [ -e "$GUEXEC" ] ; then
+    MPPATH=$( dirname "$GUEXEC" )
+  else
+    echo "MPLAB GUI Exec path missing"
+    exit 255
+  fi
+else
+  echo "MPLAB GUI Desktop file missing"
+  exit 255
+fi
+
+# find java executable from MPPATH
+PATTERN="$MPPATH/../../sys/java/*/bin/java"
+JPATH=""
+for f in $PATTERN ; do 
+  if [ -x "$f" ] ; then
+    JPATH=$( realpath "$f" )
+  fi
+done
+if [ -z "$JPATH" ] ; then
+  echo "Java executable not found"
+  exit 255
+fi
+
+# find ipe_cmd jar file from MPPATH
+IPEJAR=$( realpath "$MPPATH/../mplab_ipe/ipecmd.jar" )
+if [ -e "$IPEJAR" ] ; then
+  exec "$JPATH" -jar "$IPEJAR" "$@"
+else
+  echo "MPLAB IPE JAR not found"
+  exit 255
+fi
