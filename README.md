@@ -14,7 +14,7 @@ updating the firmware.
 ## Contents
 
    - hardware : RC hardware reference
-   - firmware : Firmware information and analysis
+   - [firmware](firmware/) : Firmware information and analysis
    - programmer : Firmware re-programmer and drill template
    - [scripts](scripts/) : Shell and python scripts
    - altfw : Alternative firmware image
@@ -25,7 +25,7 @@ updating the firmware.
 Based around the PIC16F639 Microcontroller with
 Low-Frequency Analog Front-End, the RC transponder
 works like a Passive Keyless Entry (PKE) device. 
-The transponder listens for activation messages on 125kHz
+It receives activation messages on 125kHz
 and then responds with a numeric ID by repeating
 differential pulse position encoded strings on 3.28MHz
 for a short while.
