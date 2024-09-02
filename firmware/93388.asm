@@ -547,7 +547,9 @@ skip_013						; address: 0x012a
 skip_014						; address: 0x0138
         movlw   0x05
         subwf   0x26, W
-        btfss   STATUS, Z
+
+	; test for sleep mode - omitted in track firmware variant
+        btfss   STATUS, Z				; address: 0x013a
         goto    skip_015
         bsf     (C_RAM + 15), 0x0			; reg: 0x07f
         goto    skip_017
@@ -600,6 +602,7 @@ skip_018						; address: 0x0158
 
 loop_019						; address: 0x015c
         sleep
+	; ensure interrupt is serviced before branch to loop_012
         nop
         nop
         nop
@@ -618,7 +621,7 @@ label_021						; address: 0x0166
 
 
 ; ISR Sub: handle_ra2int
-; [TBC] Clear INTCON, Set bit 3 in 0x2f[?] and return from interrupt
+; Clear INTCON, flag reception of data to main loop via 0x2f:3, return
 handle_ra2int						; address: 0x016a
         bcf     INTCON, INTF
         bsf     0x2f, 0x3
