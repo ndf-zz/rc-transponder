@@ -9,6 +9,7 @@
 ;
 ; Memory Usage:
 ;
+; 0x02f		3:AFE Parity Error
 ; 0x030		AFE Status
 ; 0x040-0x05c	Transponder ID Block
 ; 0x05e-0x05f	Temp W and STATUS
@@ -48,7 +49,7 @@
 AFESTAT	equ	0x30		; AFE Status
 TMP_W	equ	0x5f		; W register copy
 TMP_S	equ	0x5e		; STATUS register copy (swapped)
-SPI_HI equ	0x60		; AFE SPI request high bits
+SPI_HI	equ	0x60		; AFE SPI request high bits
 SPI_LO	equ	0x61		; AFE SPI request low bits
 SPI_CNT	equ	0x63		; SPI transmit/receive counter
 SPI_OPT	equ	0x64		; SPI control bits 0=r/w 2=?
@@ -85,7 +86,7 @@ vector_int						; address: 0x0004
         clrf    STATUS
         movwf   TMP_S
 
-	; If RA2/INT external interrupt, return handle_ra2int
+	; IF AFE /ALERT (Parity error RA2), return handle_ra2int
         btfsc   INTCON, INTF
         goto    handle_ra2int
 
@@ -103,7 +104,7 @@ vector_int						; address: 0x0004
 ; FUNCTION: configure_afe
 ; Set AFE configuration registers, soft reset AFE, enable LFDATA ouput
 configure_afe						; address: 0x000f
-	; CLAMP OFF -> AFE disable modulation circuit
+	; CLAMP OFF -> AFE disable talk back modulation circuit
         nop
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -113,14 +114,16 @@ configure_afe						; address: 0x000f
         movwf   SPI_HI
         call    spi_send
 
-	; AFE CR0 : Output enable filter disabled, LCX enabled
+	; AFE CR0: Output Enable Filter disabled,
+	;          /ALERT bit output triggered by parity error
+	;          LCX enable
         movlw   0x06
         bcf     STATUS, RP0
         bcf     STATUS, RP1
         movwf   AFE_CR0
         movlw   0x00
         call    afe_update_register
-	; AFE CR0: Then enable output filter: OE High = 1ms, OE Low = 1ms
+	; AFE CR0: Output Enable Filter: OE High = 1ms, OE Low = 1ms
         movlw   0x56
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -144,7 +147,7 @@ configure_afe						; address: 0x000f
         movlw   0x02
         call    afe_update_register
 
-	; LCZ tuning = 0pF
+	; AFE CR3: LCZ tuning = 0pF
         movlw   0x00
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -152,7 +155,7 @@ configure_afe						; address: 0x000f
         movlw   0x03
         call    afe_update_register
 
-	; LCX sensitivity reduction = -18dB, LCY sensitivity = -0dB
+	; AFE CR4: LCX sensitivity reduction = -18dB, LCY sensitivity = -0dB
         movlw   0x90
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -160,8 +163,10 @@ configure_afe						; address: 0x000f
         movlw   0x04
         call    afe_update_register
 
-	; Auto channel select disabled, AGCSIG demod disabled, minimum modulation: 50%
-        ; LCZ sensitivity -0dB
+	; AFE CR5: Auto channel select disabled
+	;          AGCSIG demod disabled
+	;          Minimum Modulation Depth 50%
+        ;          LCZ sensitivity -0dB
         movlw   0x00
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -519,11 +524,10 @@ skip_010						; address: 0x010c
 skip_011						; address: 0x0124
         bcf     STATUS, RP0
 loop_012						; address: 0x0125
+	; If AFE parity error detected, reset
         nop
         btfss   0x2f, 0x3
         goto    skip_013
-
-	; Global disable interrupts and loop
         bcf     INTCON, GIE
         goto    reset_init
 
@@ -621,7 +625,7 @@ label_021						; address: 0x0166
 
 
 ; ISR Sub: handle_ra2int
-; Clear INTCON, flag reception of data to main loop via 0x2f:3, return
+; Clear INTCON, flag parity error
 handle_ra2int						; address: 0x016a
         bcf     INTCON, INTF
         bsf     0x2f, 0x3
@@ -995,6 +999,7 @@ label_056						; address: 0x02a2
         movwf   PORTC
         bsf     0x2f, 0x0
 skip_057						; address: 0x02a8
+	; compute next delay time from bits in ID, 0x21 and 0x22
         bcf     0x2f, 0x5
         movf    0x40, W
         addwf   0x40, W
@@ -1011,9 +1016,11 @@ skip_057						; address: 0x02a8
         btfss   STATUS, Z
         goto    label_058
         goto    label_062
+
 label_058						; address: 0x02b8
         nop
 loop_059						; address: 0x02b9
+	; adjust delay time based on 0x24
         decf    0x24, F
         btfss   STATUS, Z
         goto    label_060
@@ -1024,7 +1031,9 @@ label_060						; address: 0x02bf
         movlw   0x0a
         subwf   0x23, F
         goto    loop_059
+
 label_061						; address: 0x02c2
+	; set next delay
         movf    0x23, W
         movwf   TMR1L
 label_062						; address: 0x02c4
