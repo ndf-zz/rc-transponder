@@ -47,32 +47,59 @@ IPECMD = 'ipecmd'
 MPLABLOG = 'MPLABXLog.xml'
 CONFIG = 0x28fa
 
+# Set POWER=True to power device from pickit programmer.
+# This option is required for programming ID Locations
+#
+# Warning: Remove battery before powering device from programmer
+POWER = True
+IPEARGS = ('-TPPK4', '-P16F639')
+
 _log = logging.getLogger('rcpatch')
 _log.setLevel(logging.DEBUG)
 
 
-def bintoihex(buf, width=16):
-    """Convert buf to ihex, add config word and return as string."""
-    c = 0
-    olen = len(buf)
+def ihexline(address, record, buf):
+    """Return intel hex encoded record for the provided buffer"""
+    addr = pack('>H', address)
+    sum = len(buf) + record
+    for b in addr:
+        sum += b
+    for b in buf:
+        sum += b
+    sum = (~(sum & 0xff) + 1) & 0xff
+    return ':%02X%s%02X%s%02X' % (len(buf), addr.hex().upper(), record,
+                                  buf.hex().upper(), sum)
+
+
+def prog_to_ihex(program):
+    """Yield intel hex encoded lines for provided program words"""
+    plen = len(program)
+    count = 0
+    stride = 0x8
+    while count < plen:
+        linelen = min(stride, plen - count)
+        buf = pack('<%dH' % (linelen), *program[count:count + linelen])
+        yield (ihexline(count << 1, 0, buf))
+        count += linelen
+
+
+def pic_hex(program=None, config_word=None, idlocations=None):
+    """Return pic hex image for the provided sections"""
     ret = []
-    while (c < olen):
-        rem = olen - c
-        if rem > width:
-            rem = width
-        sum = rem
-        adr = c
-        l = ':{0:02X}{1:04X}00'.format(rem, adr)  # rem < 0x10
-        sum += ((adr >> 8) & 0xff) + (adr & 0xff)
-        for j in range(0, rem):
-            nb = buf[c + j]
-            l += '{0:02X}'.format(nb)
-            sum = (sum + nb) & 0xff
-        l += '{0:02X}'.format((~sum + 1) & 0xff)
-        ret.append(l)
-        c += rem
-    ret.append(':02400E00FA288E')  # Config
-    ret.append(':00000001FF')  # EOF
+
+    # prepend the extended linear address
+    ret.append(ihexline(0, 0x04, b'\x00\x00'))
+
+    if program is not None:
+        for l in prog_to_ihex(program):
+            ret.append(l)
+    if config_word is not None:
+        ret.append(ihexline(0x400e, 0, pack('<H', config_word)))
+    if idlocations is not None:
+        ret.append(ihexline(0x4000, 0, pack('<4H', *idlocations)))
+
+    # append EOF
+    ret.append(ihexline(0, 1, b''))
     return '\n'.join(ret)
 
 
@@ -138,29 +165,37 @@ def main():
                                           dir='.',
                                           delete=False)
         tmpf['nbin'].close()
-        _log.debug('Loading firmware image into %s', tmpf['nbin'].name)
+        _log.debug('Reading new firmware image')
         subprocess.run(
-            [OBJCOPY, '-Iihex', '-Obinary', fwfile, tmpf['nbin'].name],
-            check=True)
-        newbin = None
+            (OBJCOPY, '-Iihex', '-Obinary', fwfile, tmpf['nbin'].name),
+            check=True,
+            capture_output=True)
+        new_bin = None
         with open(tmpf['nbin'].name, 'rb') as f:
-            newbin = f.read(4096)
-        newfw = list(unpack('<2048H', newbin))
-        nidx = find_idblock(newfw)
-        if nidx is None:
+            new_bin = f.read()
+        new_prog = list(unpack('<2048H', new_bin[0:0x1000]))
+        new_cfg = unpack('<H', new_bin[0x400e:0x4010])[0]
+        new_idl = unpack('<4H', new_bin[0x4000:0x4008])
+        _log.debug('Configuration Word = 0x%04x', new_cfg)
+        _log.debug('ID Locations: %s', ', '.join((hex(w) for w in new_idl)))
+        new_idx = find_idblock(new_prog)
+        if new_idx is None:
             raise RuntimeError('Firmware ID block not found')
-        _log.debug('Found ID block at offset: 0x%03x', nidx)
+        _log.debug('Firmware ID block offset: 0x%04x', new_idx)
 
-        # Read transponder memory
+        # Read target transponder memory
         tmpf['thex'] = NamedTemporaryFile(suffix='.hex',
                                           prefix='t_',
                                           dir='.',
                                           delete=False)
         tmpf['thex'].close()
-        _log.debug('Reading transponder into %s', tmpf['thex'].name)
-        subprocess.run(
-            [ipecmd, '-TPPK4', '-P16F639', '-GF' + tmpf['thex'].name],
-            check=True)
+        _log.debug('Reading old firmware from target')
+        ipeargs = [ipecmd]
+        ipeargs.extend(IPEARGS)
+        if POWER:
+            ipeargs.append('-W')
+        ipeargs.append('-GF' + tmpf['thex'].name)
+        subprocess.run(ipeargs, check=True, capture_output=True)
 
         # objcopy hex to bin
         tmpf['tbin'] = NamedTemporaryFile(suffix='.bin',
@@ -168,65 +203,75 @@ def main():
                                           dir='.',
                                           delete=False)
         tmpf['tbin'].close()
-        _log.debug('Copying program binary to %s', tmpf['tbin'].name)
-        subprocess.run([
-            OBJCOPY, '-Iihex', '-Obinary',
-            tmpf['thex'].name, tmpf['tbin'].name
-        ],
-                       check=True)
+        subprocess.run((OBJCOPY, '-Iihex', '-Obinary', tmpf['thex'].name,
+                        tmpf['tbin'].name),
+                       check=True,
+                       capture_output=True)
 
         # find original transponder id block
-        origbin = None
+        orig_bin = None
         with open(tmpf['tbin'].name, 'rb') as f:
-            origbin = f.read(4096)
-        origfw = unpack('<2048H', origbin)
-        idx = find_idblock(origfw)
-        if idx is None:
-            raise RuntimeError('Transponder ID block not found')
-        _log.debug('Found ID block at offset: 0x%03x', idx)
-        oid = origfw[idx + 9] & 0xff | ((origfw[idx + 7] & 0xff) << 8) | (
-            (origfw[idx + 5] & 0xff) << 16)
+            orig_bin = f.read()
+        orig_prog = unpack('<2048H', orig_bin[0:0x1000])
+        orig_idx = find_idblock(orig_prog)
+        if orig_idx is None:
+            raise RuntimeError('Target ID block not found')
+        _log.debug('Target ID block offset: 0x%04x', orig_idx)
+        orig_id = orig_prog[orig_idx + 9] & 0xff
+        orig_id |= ((orig_prog[orig_idx + 7] & 0xff) << 8)
+        orig_id |= ((orig_prog[orig_idx + 5] & 0xff) << 16)
         idblock = []
         j = 0
         while j < 58:
-            idblock.append(origfw[idx + 5 + j] & 0xff)
+            idblock.append(orig_prog[orig_idx + 5 + j] & 0xff)
             j += 2
-        _log.debug('%d - %s', oid, bytes(idblock).hex())
-        backupname = '%d_orig.hex' % (oid)
+        _log.debug('%d - %s', orig_id, bytes(idblock).hex())
+        backupname = '%d_orig.hex' % (orig_id)
         if not os.path.exists(backupname):
             os.rename(tmpf['thex'].name, backupname)
             _log.debug('Saved original firmware to %s', backupname)
 
         # patch firmware image with transponder id block
+        _log.debug('Patching ID block 0x%04x->0x%04x', orig_idx, new_idx)
         j = 0
         while j < 58:
-            newfw[nidx + 5 + j] = origfw[idx + 5 + j]
+            new_prog[new_idx + 5 + j] = orig_prog[orig_idx + 5 + j]
             j += 2
-        pbin = pack('<2048H', *newfw)
         tmpf['phex'] = NamedTemporaryFile(suffix='.hex',
                                           prefix='t_',
                                           mode='w',
                                           dir='.',
                                           delete=False)
-        _log.debug('Copying patched binary to %s', tmpf['phex'].name)
-        tmpf['phex'].write(bintoihex(pbin))
+        tmpf['phex'].write(pic_hex(new_prog, new_cfg, new_idl))
         tmpf['phex'].close()
 
         # Write patched firmware back to transponder
-        subprocess.run(
-            [ipecmd, '-TPPK4', '-P16F639', '-M', '-F' + tmpf['phex'].name],
-            check=True)
+        ipeargs = [ipecmd]
+        ipeargs.extend(IPEARGS)
+        if POWER:
+            ipeargs.append('-W')
+        ipeargs.extend(('-M', '-F' + tmpf['phex'].name))
+        _log.debug('Writing new firmware to target')
+        subprocess.run(ipeargs, check=True, capture_output=True)
 
+    except subprocess.CalledProcessError as e:
+        _log.debug('Error running command %s (%d), Output: \n%s', e.cmd,
+                   e.returncode, e.output.decode('utf-8', 'replace'))
+        _log.error('Update aborted')
+        return -2
     except Exception as e:
-        _log.error('%s: %s', e.__class__.__name__, e)
+        _log.debug('%s: %s', e.__class__.__name__, e)
+        _log.error('Update aborted')
         return -1
     finally:
         for t in tmpf:
             if os.path.exists(tmpf[t].name):
                 os.unlink(tmpf[t].name)
-                _log.debug('Removed %s: %s', t, tmpf[t].name)
+                _log.debug('Remove temp file %s', t)
         if os.path.exists(MPLABLOG):
+            _log.debug('Remove MPLAB log')
             os.unlink(MPLABLOG)
+    _log.info('Target updated OK')
     return 0
 
 

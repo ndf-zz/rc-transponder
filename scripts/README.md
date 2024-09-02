@@ -14,6 +14,10 @@ Update transponder firmware, retaining ID block. For example:
 	Program Succeeded.
 	Operation Succeeded
 
+Note: In order to erase ID Locations, a 5V VDD is required. Set
+constant variable "POWER" to supply target with 5V during programming.
+
+
 ## ipecmd
 
 IPECMD command wrapper for running MPLAB IPE tool:
