@@ -2,6 +2,8 @@
 
 RC Transponder Documentation
 
+![RC Transponder](hardware/rctrans_pic.jpg "RC Transponder")
+
 The Tag Heuer/Chronelec RC transponder is a
 discontinued LF/HF magnetic induction type
 identifier for sports timing applications. 
@@ -13,9 +15,9 @@ updating the firmware.
 
 ## Contents
 
-   - hardware : RC hardware reference
+   - [hardware](hardware/) : RC hardware reference
    - [firmware](firmware/) : Firmware information and analysis
-   - programmer : Firmware re-programmer and drill template
+   - [programmer](programmer/) : Firmware re-programmer and drill template
    - [scripts](scripts/) : Shell and python scripts
    - altfw : Alternative firmware image
 
