@@ -6,6 +6,9 @@
 ;                 ID  |  Start |              ID no/sum                 |  
 ;                                                               Battery |  |
 ;                                                                  Stop    |  |
+; Annotated disassembly by gpdasm:
+;
+;	$ gpdasm -n -s -p p16f639 93388.hex
 ;
 ; Memory Usage:
 ;
@@ -35,8 +38,8 @@
 ; 0x075		Copy of AFE column parity (unused)
 ; 0x076-0x07a	[unused]
 ; 0x07b		previous TX word spacing sum
-; 0x07c		Main loop counter
-; 0x07d-0x07e	Reset detect flags
+; 0x07c		Deep sleep counter
+; 0x07d-0x07e	Reset keys
 ; 0x07f		0:"Deep sleep" - New LF input ignored
 ; 0x0a0-0x0bf	[unused]
 ;
@@ -101,6 +104,10 @@ AFE_CR5	equ	0x6a		; AFE Config Register 5
 AFE_PR6	equ	0x6b		; AFE Column Parity Register 6
 AFE_SR7	equ	0x6c		; AFE Status Register 7
 C_RAM	equ	0x0070		; size: 16 bytes
+TX_SUM	equ	0x07b		; Sum for computing pseudorandom delay
+DS_CNT	equ	0x07c		; Deep sleep loop counter
+BK_LO	que	0x07d		; Boot key low bits
+BK_HI	equ	0x07e		; Boot key high bits
 DSLEEP	equ	0x07f		; Deep sleep flag, bit 0
 
 
@@ -120,13 +127,13 @@ vector_reset						; address: 0x0000
 ; ISR: vector_int
 ; Interrupt handler
 vector_int						; address: 0x0004
-	; save STATUS and W
+	; Save STATUS and W
         movwf   TMP_W
         swapf   STATUS, W
         clrf    STATUS
         movwf   TMP_S
 
-	; IF AFE /ALERT (Parity error RA2), return handle_ra2int
+	; If AFE /ALERT (Parity error RA2), return handle_ra2int
         btfsc   INTCON, INTF
         goto    handle_ra2int
 
@@ -237,7 +244,8 @@ configure_afe						; address: 0x000f
         movlw   0xde
         movwf   TRISC
 
-	; Enable LFDATA output by pulling C1(/CS) high. Ref: datasheet 11.32.1
+	; Enable LFDATA output by pulling /CS high. Ref: datasheet 11.32.1
+	; Note: Interrupt is enabled seperately by function enable_lfdata
         bcf     STATUS, RP0
         bcf     STATUS, RP1
         bsf     PORTC, RC1
@@ -245,7 +253,7 @@ configure_afe						; address: 0x000f
 
 
 ; FUNCTION: disable_lfdata
-; disable ioca1 (LFDATA interrupt) and clear any pending ioca
+; Disable ioca1 (LFDATA interrupt) and clear any pending ioca
 ; Note: will enable GIE, PEIE, INTE if not already set
 disable_lfdata						; address: 0x0056
         bsf     STATUS, RP0
@@ -264,7 +272,7 @@ disable_lfdata						; address: 0x0056
 
 
 ; FUNCTION: enable_lfdata
-; clear pending ioca1 and enable ioca1 (LFDATA interrupt)
+; Clear pending ioca1 and enable ioca1 (LFDATA interrupt)
 ; Note: will enable GIE, PEIE, INTE if not already set
 enable_lfdata						; address: 0x0063
         bcf     STATUS, RP0
@@ -285,7 +293,7 @@ enable_lfdata						; address: 0x0063
 
 
 ; FUNCTION: disable_timer
-; set TMR1 = 0xff00, disable timer, disable TMR1 interrupt
+; Set TMR1 = 0xff00, disable timer, disable TMR1 interrupt
 disable_timer						; address: 0x0072
         bcf     STATUS, RP0
         clrf    TMR1L
@@ -305,7 +313,7 @@ disable_timer						; address: 0x0072
 ; FUNCTION: enable_timer
 ; Enable TMR1 Fosc/4 / 8, and TMR1 interrupt
 ; If SFLAGS:LFWAIT set timer to 0xafe0 (~200ms)
-; else set timer to 0xff9c (~1ms)
+; Else set timer to 0xff9c (~1ms)
 enable_timer						; address: 0x007f
         bcf     STATUS, RP0
         btfss   SFLAGS, LFWAIT
@@ -379,18 +387,18 @@ wdt_prescale_2						; address: 0x00a5
 ; ISR Sub: reset_init
 ; Reset routine
 reset_init						; address: 0x00ab
-	; zero PORTA/C
+	; Zero PORTA/C
         nop
         clrf    PORTA
         clrf    PORTC
 
-	; set PORTA all input
+	; Set PORTA all input
         bsf     STATUS, RP0
         bcf     STATUS, RP1
         movlw   0xff
         movwf   TRISA
 
-	; disable analog comparators
+	; Disable analog comparators
         bcf     STATUS, RP0
         bcf     STATUS, RP1
         movlw   0x07
@@ -431,7 +439,7 @@ reset_init						; address: 0x00ab
         movlw   0x00
         movwf   VRCON
 
-	; Enable PLVD module (twice?)
+	; Enable low voltage detect @ 2.3V
         bsf     LVDCON, LVDEN
         movlw   0x14
         movwf   LVDCON
@@ -484,48 +492,52 @@ loop_005						; address: 0x00d7
         nop
         call    disable_lfdata
 
-	; if 0x7f:0 goto skip006; else enable lfdata, GIE, PEIE, INTE
+	; If 0x7f:0 goto skip006; else enable lfdata, GIE, PEIE, INTE
         btfsc   DSLEEP, 0x0
         goto    skip_006
         call    enable_lfdata
         goto    skip_008
 skip_006						; address: 0x00f2
-	; clear AFE status
+	; Clear AFE status
         clrf    AFESTAT
-	; increment 0x7c, if == 6, write 5 to 0x7c
-        incf    (C_RAM + 12), F				; reg: 0x07c
+	; Saturated increment DS_CNT to 5
+        incf    DS_CNT, F
         movlw   0x06
-        subwf   (C_RAM + 12), W				; reg: 0x07c
+        subwf   DS_CNT, W
         btfss   STATUS, Z
         goto    skip_007
         movlw   0x05
-        movwf   (C_RAM + 12)				; reg: 0x07c
+        movwf   DS_CNT
 skip_007						; address: 0x00fa
-	; clear deep sleep bit
+	; Clear deep sleep bit
         bcf     DSLEEP, 0x0
 skip_008						; address: 0x00fb
-	; enable timer ~200ms
+	; Enable timer ~200ms
         call    enable_timer
-        movf    (C_RAM + 13), W				; reg: 0x07d
+
+	; If BK_LO == 0x59 and BK_HI == 0xae, skip_010
+        movf    BK_LO, W
         sublw   0x59
         btfss   STATUS, Z
         goto    skip_009
-        movf    (C_RAM + 14), W				; reg: 0x07e
+        movf    BK_HI, W
         sublw   0xae
         btfss   STATUS, Z
         goto    skip_009
         goto    skip_010
 skip_009						; address: 0x0105
+	; Initialise boot keys and deep sleep
         movlw   0x59
-        movwf   (C_RAM + 13)				; reg: 0x07d
+        movwf   BK_LO
         movlw   0xae
-        movwf   (C_RAM + 14)				; reg: 0x07e
+        movwf   BK_HI
         clrf    DSLEEP
-        clrf    (C_RAM + 12)				; reg: 0x07c
+        clrf    DS_CNT
         goto    skip_011
+
 skip_010						; address: 0x010c
         nop
-	; if CHXACT Channel X Active
+	; If CHXACT Channel X Active
         btfss   AFESTAT, CHXACT
         goto    skip_011
         bcf     STATUS, RP0
@@ -549,19 +561,19 @@ skip_010						; address: 0x010c
         movwf   TX_TCNT
         movlw   0x02
         movwf   TX_CNT0
-        clrf    (C_RAM + 12)				; reg: 0x07c
+        clrf    DS_CNT
         bcf     DSLEEP, 0x0
         clrf    RX_CNT
 
-	; Enable Low-voltage detect module LVDCON:LVDEN
-	; and set LVDL2 2.3V (default)
+	; Enable low voltage detect @ 2.3V
         bsf     STATUS, RP0
-        bsf     LVDCON, 0x4
+        bsf     LVDCON, LVDEN
         movlw   0x14
         movwf   LVDCON
         bcf     STATUS, RP0
 skip_011						; address: 0x0124
         bcf     STATUS, RP0
+
 loop_012						; address: 0x0125
 	; If AFE parity error detected, reset
         nop
@@ -591,7 +603,7 @@ skip_014						; address: 0x0138
         movlw   0x05
         subwf   RX_CNT, W
 
-	; test for sleep mode - omitted in track firmware variant
+	; Test for sleep mode - omitted in track firmware variant
         btfss   STATUS, Z				; address: 0x013a
         goto    skip_015
         bsf     DSLEEP, 0x0
@@ -604,16 +616,17 @@ skip_016						; address: 0x0140
 skip_017						; address: 0x0141
         btfss   SFLAGS, EOTX
         goto    loop_012
+
         bcf     SFLAGS, EOTX
         call    disable_timer
 
-	; disable voltage reference
+	; Disable voltage reference
         bsf     STATUS, RP0
         bcf     STATUS, RP1
         movlw   0x00
         movwf   VRCON
 
-	; disable low voltage detect module
+	; Disable low voltage detect module
         movlw   0x00
         movwf   LVDCON
         bcf     STATUS, RP0
@@ -622,44 +635,44 @@ skip_017						; address: 0x0141
         movlw   0xfe
         movwf   PORTC
 
-	; if in loop too long, deep sleep
+	; If in loop too long, deep sleep
         btfss   DSLEEP, 0x0
         goto    skip_020
         movlw   0x05
-        subwf   (C_RAM + 12), W				; reg: 0x07c
+        subwf   DS_CNT, W
         btfsc   STATUS, Z
         goto    skip_018
 
-	; deep sleep for 8s
+	; Deep sleep for 8s
         bcf     SFLAGS, TXED
         call    wdt_prescale_4
         call    disable_lfdata
         goto    loop_019
 
 skip_018						; address: 0x0158
-	; deep sleep for 67s
+	; Deep sleep for 67s
         bcf     SFLAGS, TXED
         call    wdt_prescale_32
         call    disable_lfdata
-        clrf    (C_RAM + 12)				; reg: 0x07c
+        clrf    DS_CNT
 
 loop_019						; address: 0x015c
         sleep
-	; ensure interrupt is serviced before branch to loop_012
+	; Ensure interrupt is serviced before branch to loop_012
         nop
         nop
         nop
         goto    loop_012
 skip_020						; address: 0x0161
-	; if nothing transmitted in this loop,
-	; sleep with lfdata wakeup enabled for ~270s
+	; If nothing transmitted in this loop,
+	;   sleep with lfdata wakeup enabled for ~270s
         btfsc   SFLAGS, TXED
         goto    label_021
         call    wdt_prescale_128
         call    enable_lfdata
         goto    loop_019
 label_021						; address: 0x0166
-	; else sleep with lfdata wakeup enabled for ~4s
+	; Else sleep with lfdata wakeup enabled for ~4s
         bcf     SFLAGS, TXED
         call    wdt_prescale_2
         call    enable_lfdata
@@ -679,18 +692,21 @@ handle_ra2int						; address: 0x016a
 handle_lfdata						; address: 0x016d
         bcf     INTCON, RAIF
         bcf     STATUS, RP0
-	; if deep sleep not set
+
+	; If deep sleep set, skip_024
         btfsc   DSLEEP, 0x0
         goto    skip_024
 
+	; Schedule ~4s WDT reset
         call    wdt_prescale_2
+
 	; Turn on LED (clear C5)
         bcf     PORTC, RC5
         bcf     SFLAGS, LFWAIT
         bcf     SFLAGS, EOTX
         bsf     SFLAGS, NEWLF
 
-	; enable 1ms timer and disable lfdata
+	; Enable 1ms timer and disable lfdata
         call    enable_timer
         call    disable_lfdata
         clrf    TX_CNT2
@@ -699,46 +715,53 @@ handle_lfdata						; address: 0x016d
         movwf   TX_TCNT
         movlw   0x02
         movwf   TX_CNT0
-        clrf    (C_RAM + 12)				; reg: 0x07c
+        clrf    DS_CNT
         bcf     DSLEEP, 0x0
         clrf    RX_CNT
 
-	; enable low voltage detect
+	; Enable low voltage detect @ 2.3V
         bsf     STATUS, RP0
-        bsf     LVDCON, 0x4
+        bsf     LVDCON, LVDEN
+        ;bsf     LVDCON, 0x4
         movlw   0x14
         movwf   LVDCON
         bcf     STATUS, RP0
         goto    skip_025
 
 skip_024						; address: 0x0187
-	; else if deep sleep, ignore input and disable LFDATA
+	; Ignore input and disable LFDATA
         bsf     SFLAGS, LFWAIT
         bcf     SFLAGS, EOTX
         movlw   0x01
         movwf   TX_CNT2
         clrf    TX_CNT1
         clrf    RX_CNT
-	; enable 200ms timer & disable lfdata
+
+	; Enable 200ms timer & disable lfdata
         call    enable_timer
         call    disable_lfdata
+
 skip_025						; address: 0x018f
-	; Read PORTA to clear ioca1 and clear raif
+	; Read PORTA to clear ioca1 and clear raif again
         movf    PORTA, W
         bcf     INTCON, RAIF
         goto    interrupt_return
 
 
 ; ISR Sub: handle_timer_overflow
-; transmit id
+; Transmit ID if required
 handle_timer_overflow					; address: 0x0192
         bcf     PIR1, TMR1IF
         bcf     STATUS, RP0
         nop
+
+	; If SFLAGS:LFWAIT, skip_063
         btfss   SFLAGS, LFWAIT
         goto    id_block
-        goto    label_063
+        goto    skip_063
+
 id_block						; address: 0x0198
+	; Transfer ID block into registers 0x040:0x05c
         movlw   0x9c
         movwf   TMR1L
         movlw   0xff
@@ -802,15 +825,20 @@ id_block						; address: 0x0198
         movwf   0x5b
         movlw   0x02
         movwf   0x5c
-	; If X active, skip to 057
+
+	; If first transmit timeout, skip to delay time calc
         btfsc   SFLAGS, NEWLF
         goto    skip_057
-        incf    (C_RAM + 11), F
+
+	; Pre-roll/back-off? return until ++TX_CNT0 == TX_TCNT
+        incf    TX_SUM, F
         incf    TX_CNT0, F
         movf    TX_CNT0, W
         subwf   TX_TCNT, W
         btfss   STATUS, Z
         goto    interrupt_return
+
+	; Saturated increment TX_TCNT to 0x63
         clrf    TX_CNT0
         incf    TX_TCNT, F
         movlw   0x64
@@ -819,231 +847,235 @@ id_block						; address: 0x0198
         goto    skip_028
         movlw   0x63
         movwf   TX_TCNT
+
 skip_028						; address: 0x01e7
-        nop
 	; If low voltage detected, update reg 0x5b with 0x05
+        nop
         btfss   PIR1, LVDIF
         goto    label_029
         movlw   0x05
         movwf   0x5b
+
 label_029						; address: 0x01ec
+	; Toggle Port C with delay times encoded above in ID block
         movf    0x43, W
         btfsc   STATUS, Z
-        goto    label_031
+        goto    skip_031
         movlw   0xdf
         movwf   PORTC
         movlw   0xde
-label_030						; address: 0x01f2
+delay_030						; address: 0x01f2
         decfsz  0x43, F
-        goto    label_030
+        goto    delay_030
         movwf   PORTC
         movlw   0xdf
         nop
-label_031						; address: 0x01f7
+skip_031						; address: 0x01f7
         movlw   0xdf
         movwf   PORTC
         movlw   0xde
-label_032						; address: 0x01fa
+delay_032						; address: 0x01fa
         decfsz  0x44, F
-        goto    label_032
+        goto    delay_032
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_033						; address: 0x0201
+delay_033						; address: 0x0201
         decfsz  0x45, F
-        goto    label_033
+        goto    delay_033
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_034						; address: 0x0208
+delay_034						; address: 0x0208
         decfsz  0x46, F
-        goto    label_034
+        goto    delay_034
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_035						; address: 0x020f
+delay_035						; address: 0x020f
         decfsz  0x47, F
-        goto    label_035
+        goto    delay_035
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_036						; address: 0x0216
+delay_036						; address: 0x0216
         decfsz  0x48, F
-        goto    label_036
+        goto    delay_036
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_037						; address: 0x021d
+delay_037						; address: 0x021d
         decfsz  0x49, F
-        goto    label_037
+        goto    delay_037
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_038						; address: 0x0224
+delay_038						; address: 0x0224
         decfsz  0x4a, F
-        goto    label_038
+        goto    delay_038
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_039						; address: 0x022b
+delay_039						; address: 0x022b
         decfsz  0x4b, F
-        goto    label_039
+        goto    delay_039
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_040						; address: 0x0232
+delay_040						; address: 0x0232
         decfsz  0x4c, F
-        goto    label_040
+        goto    delay_040
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_041						; address: 0x0239
+delay_041						; address: 0x0239
         decfsz  0x4d, F
-        goto    label_041
+        goto    delay_041
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_042						; address: 0x0240
+delay_042						; address: 0x0240
         decfsz  0x4e, F
-        goto    label_042
+        goto    delay_042
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_043						; address: 0x0247
+delay_043						; address: 0x0247
         decfsz  0x4f, F
-        goto    label_043
+        goto    delay_043
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_044						; address: 0x024e
+delay_044						; address: 0x024e
         decfsz  0x50, F
-        goto    label_044
+        goto    delay_044
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_045						; address: 0x0255
+delay_045						; address: 0x0255
         decfsz  0x51, F
-        goto    label_045
+        goto    delay_045
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_046						; address: 0x025c
+delay_046						; address: 0x025c
         decfsz  0x52, F
-        goto    label_046
+        goto    delay_046
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_047						; address: 0x0263
+delay_047						; address: 0x0263
         decfsz  0x53, F
-        goto    label_047
+        goto    delay_047
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_048						; address: 0x026a
+delay_048						; address: 0x026a
         decfsz  0x54, F
-        goto    label_048
+        goto    delay_048
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_049						; address: 0x0271
+delay_049						; address: 0x0271
         decfsz  0x55, F
-        goto    label_049
+        goto    delay_049
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_050						; address: 0x0278
+delay_050						; address: 0x0278
         decfsz  0x56, F
-        goto    label_050
+        goto    delay_050
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_051						; address: 0x027f
+delay_051						; address: 0x027f
         decfsz  0x57, F
-        goto    label_051
+        goto    delay_051
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_052						; address: 0x0286
+delay_052						; address: 0x0286
         decfsz  0x58, F
-        goto    label_052
+        goto    delay_052
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_053						; address: 0x028d
+delay_053						; address: 0x028d
         decfsz  0x59, F
-        goto    label_053
+        goto    delay_053
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_054						; address: 0x0294
+delay_054						; address: 0x0294
         decfsz  0x5a, F
-        goto    label_054
+        goto    delay_054
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_055						; address: 0x029b
+delay_055						; address: 0x029b
         decfsz  0x5b, F
-        goto    label_055
+        goto    delay_055
         movwf   PORTC
         movlw   0xdf
         nop
         movwf   PORTC
         movlw   0xde
-label_056						; address: 0x02a2
+delay_056						; address: 0x02a2
         decfsz  0x5c, F
-        goto    label_056
+        goto    delay_056
         movwf   PORTC
         movlw   0xde
         movwf   PORTC
         bsf     SFLAGS, TXED
+
 skip_057						; address: 0x02a8
-	; compute next delay time from bits in ID, TX_CNT1 and TX_CNT2
+	; Compute next 4 bit delay time TX_DCNT from ID and counters
         bcf     SFLAGS, NEWLF
         movf    0x40, W
         addwf   0x40, W
@@ -1052,58 +1084,82 @@ skip_057						; address: 0x02a8
         addwf   0x42, W
         addwf   TX_CNT1, W
         addwf   TX_CNT2, W
-        addwf   (C_RAM + 11), F				; reg: 0x07b
-        movf    (C_RAM + 11), W				; reg: 0x07b
+        addwf   TX_SUM, F
+        movf    TX_SUM, W
         andlw   0x0f
         movwf   TX_DCNT
         movf    TX_DCNT, F
-        btfss   STATUS, Z
-        goto    label_058
-        goto    label_062
 
-label_058						; address: 0x02b8
-        nop
-loop_059						; address: 0x02b9
-	; adjust delay time based on TX_DCNT
-        decf    TX_DCNT, F
+	; If TX_DCNT == 0, skip_062 (leave TMR1L = 0xff for minimum delay)
         btfss   STATUS, Z
-        goto    label_060
+        goto    skip_058
+        goto    skip_062
+
+skip_058						; address: 0x02b8
+        nop
+
+loop_059						; address: 0x02b9
+	; Adjust delay time based on TX_DCNT (TX_TML=0xff from above)
+        decf    TX_DCNT, F
+
+	; If TX_DCNT != 0, skip_060
+        btfss   STATUS, Z
+        goto    skip_060
+
+	; Subtract 10 from TX_TML, skip_061
         movlw   0x0a
         subwf   TX_TML, F
         goto    label_061
-label_060						; address: 0x02bf
+
+skip_060						; address: 0x02bf
+	; Subtract 10 from TX_TML, loop_059
         movlw   0x0a
         subwf   TX_TML, F
         goto    loop_059
 
 label_061						; address: 0x02c2
-	; set next delay
+	; Set next delay time
         movf    TX_TML, W
         movwf   TMR1L
-label_062						; address: 0x02c4
+
+skip_062						; address: 0x02c4
+	; Update tx counters
         incf    TX_CNT1, F
         movf    TX_CNT1, W
         sublw   0x25
+
+	; If TX_CNT1 != 37, skip_064
         btfss   STATUS, Z
-        goto    label_064
+        goto    skip_064
+
+        ; Clear TX_CNT1 and increment TX_CNT2
         clrf    TX_CNT1
         incf    TX_CNT2, F
         movf    TX_CNT2, W
         sublw   0x01
+
+	; If TX_CNT2 != 1, skip_064
         btfss   STATUS, Z
-        goto    label_064
+        goto    skip_064
+
+	; Set timer to 200ms
         bsf     SFLAGS, LFWAIT
         movlw   0xe0
         movwf   TMR1L
         movlw   0xaf
         movwf   TMR1H
- 	; Turn on LED (clear C5)
+
+ 	; Turn on LED (clear C5) and return (skip_064)
         bcf     PORTC, RC5
-        goto    label_064
+        goto    skip_064
+
 label_063						; address: 0x02d6
+	; Flag end of transmit and disable timer
         bsf     SFLAGS, EOTX
         call    disable_timer
-label_064						; address: 0x02d8
+
+skip_064						; address: 0x02d8
+	; Return
         nop
 
 
@@ -1228,7 +1284,7 @@ afe_update_register					; address: 0x0331
         rlf     (C_RAM + 1), W				; reg: 0x071
         addlw   0xe0
 
-	; arrange AFE command in 0x060:0x061:
+	; Arrange AFE command in 0x060:0x061:
 	;  [command] [address] [data] [0]
         bcf     STATUS, RP0
         bcf     STATUS, RP1
@@ -1262,9 +1318,9 @@ afe_update_register					; address: 0x0331
 
 
 ; FUNCTION: afe_read_config_reg
-; read AFE register W, copy to memory AFE_CR0+W and return value in W
+; Read AFE register W, copy to memory AFE_CR0+W and return value in W
 afe_read_config_reg					; address: 0x0351
-	; store W to tmp reg 0x71
+	; Store W to tmp reg 0x071
         bcf     STATUS, RP0
         bcf     STATUS, RP1
         movwf   (C_RAM + 1)				; reg: 0x071
@@ -1366,14 +1422,14 @@ afe_get_row_parity					; address: 0x039a
         movlw   0x08
         movwf   C_RAM					; reg: 0x070
 loop_074						; address: 0x03a1
-	; if src&1  tmp++
+	; If src&1  tmp++
         rrf     (C_RAM + 2), F				; reg: 0x072
         btfsc   STATUS, C
         incf    (C_RAM + 1), F				; reg: 0x071
 	; counter-- if zero break
         decfsz  C_RAM, F				; reg: 0x070
         goto    loop_074
-	; if tmp&1, return 1 else return 0
+	; If tmp&1, return 1 else return 0
         btfsc   (C_RAM + 1), 0x0			; reg: 0x071
         retlw   0x00
         retlw   0x01
