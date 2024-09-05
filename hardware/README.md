@@ -31,8 +31,8 @@ Notes:
 
 ### LF Input
 
-![Activation Signal](activation_lfdata.png "Activation Signal")
-![20ms Period](activation_period.png "20ms Activation Period")
+![Activation Signal](activation-lfdata.png "Activation Signal")
+![20ms Period](activation-period.png "20ms Activation Period")
 
 125kHz LF activation signal and AFE demodulated output on LFDATA. 
 
@@ -56,7 +56,7 @@ Gating CCLK/DAT signals through U2 into U3 and U4.
 ### Wakeup Reset
 
 ![LED LFDATA](wake_up_reset.png "LED LFDATA Wakeup")
-![LED DAT]](wake_to_tx.png "LED DAT Wakeup")
+![LED DAT](wake_to_tx.png "LED DAT Wakeup")
 
 LED/LFDATA and LED/DAT on reception of valid activation. LFDATA
 noise after trigger bit is due to AFE reconfiguration out of reset.
