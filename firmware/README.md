@@ -61,12 +61,15 @@ Configuration word is set to 0x28fa:
           - if deep sleep flag set, disable lfdata and schedule wdt reset
           - else enable lfdata and schedule wdt reset
           - sleep
+          - reset[3]
 
 Notes:
 
    1. Out of reset, variables 0x020-0x07a are cleared,
       0x07b-0x07f retain previous values
    2. Branch test at offset 0x013a omitted in track firmware
+   3. Config option WURE is enabled, all wakeup events result
+      in a device reset
 
 
 ### AFE /ALERT Interrupt Handler
