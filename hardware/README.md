@@ -61,4 +61,4 @@ Gating CCLK/DAT signals through U2 into U3 and U4.
 LED/LFDATA and LED/DAT on reception of valid activation. LFDATA
 noise after trigger bit is due to AFE reconfiguration out of reset.
 Transmit sequence begins about 7ms after wakeup, the first token
-is transitted about 2ms later.
+is sent about 2ms later.

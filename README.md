@@ -19,7 +19,7 @@ updating the firmware.
    - [firmware](firmware/) : Firmware information and analysis
    - [programmer](programmer/) : Firmware re-programmer and drill template
    - [scripts](scripts/) : Shell and python scripts
-   - altfw : Alternative firmware image
+   - [altfw](altfw/) : Alternative firmware
 
 
 ## Overview
