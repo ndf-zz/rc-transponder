@@ -106,7 +106,7 @@ AFE_SR7	equ	0x6c		; AFE Status Register 7
 C_RAM	equ	0x0070		; size: 16 bytes
 TX_SUM	equ	0x07b		; Sum for computing pseudorandom delay
 DS_CNT	equ	0x07c		; Deep sleep loop counter
-BK_LO	que	0x07d		; Boot key low bits
+BK_LO	equ	0x07d		; Boot key low bits
 BK_HI	equ	0x07e		; Boot key high bits
 DSLEEP	equ	0x07f		; Deep sleep flag, bit 0
 
@@ -1153,7 +1153,7 @@ skip_062						; address: 0x02c4
         bcf     PORTC, RC5
         goto    skip_064
 
-label_063						; address: 0x02d6
+skip_063						; address: 0x02d6
 	; Flag end of transmit and disable timer
         bsf     SFLAGS, EOTX
         call    disable_timer
