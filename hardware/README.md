@@ -64,7 +64,7 @@ Message Symbols:
 
 Message Format:
 
-   - Preamble (3 symbols): '03' '04' '07
+   - Preamble (3 symbols): '03' '04' '07'
    - ID & CRCs (20 symbols)
       - CRC1[15:8] (4 symbols) [*]
       - ID[7:0] (4 symbols)

@@ -4,5 +4,5 @@
 
 Source: lfmon.asm
 
-Display received LFDATA directly on transponder LED without
+Display wakeup by LFDATA on transponder LED without
 transmitting ID.
