@@ -1,8 +1,8 @@
 ;
 ; Chronelec RC transponder - Alternative Firmware
 ;
-; Test Program: LFMon
-; Monitor LFDATA input and display on LED
+; Test Program: HFtest
+; After initial LFDATA wakeup, transmit for 30s seconds, then sleep
 ; Date: 2024-09-11
 ; Version: 1.0
 ;
@@ -27,11 +27,11 @@
 	CONFIG	WURE  = OFF
 
 
-; ID Locations 'LFMon1.0'
+; ID Locations 'HFTst1.0'
 	org	_IDLOC0
-	dw	0x2646
-	dw	0x26ef
-	dw	0x3731
+	dw	0x2446
+	dw	0x2a73
+	dw	0x3a31
 	dw	0x1730
 
 
@@ -54,6 +54,7 @@ AFE_SR7 equ	0x6c		; AFE Status Register 7
 PRT_CNT equ	0x70		; Parity check counter
 PRT_SUM equ	0x71		; Parity ones
 PRT_TMP equ	0x72		; Parity temp value
+TX_CNT	equ	0x7c		; Transmit counter
 SFLAGS	equ	0x7d		; Runtime flags
 AFEERR	equ	0x1		; AFE Parity error flag
 LFDATA	equ	0x2		; LFDATA activity flag
@@ -215,24 +216,92 @@ main_loop:
 	; Executed before branch to int handler on wakeup
 	bcf	SFLAGS,INTRET
 
+
 	; Check for AFE error condition
 	btfsc	SFLAGS,AFEERR
 	goto	reset_init
 
-	; Update LFDATA/LED
-	BANKSEL PORTC
+	; Handle activation
 	btfss	SFLAGS,LFDATA
-	goto	led_off
-	bcf	SFLAGS,LFDATA
-led_on:
+	goto	check_tx
+
+	; LED ON
+	BANKSEL PORTC
 	bcf	PORTC,5
-	call	enable_wakeup_4ms
+
+	; Intialise transmit on next wakeup
+	call	disable_lfdata
+	call	enable_wakeup_1s
+	movlw	0x20
+	movwf	TX_CNT
+	bcf	SFLAGS,LFDATA
 	goto	main_loop
-led_off:
+
+check_tx:
+	; If WDT wakeup
 	btfsc	SFLAGS,INTRET
 	goto	main_loop
-	bsf	PORTC,5
+
+	decfsz	TX_CNT
+	goto	begin_transmit
+
+cancel_transmit:
+	; Cancel transimssion and re-enable LFDATA
 	call	disable_wakeup
+	call	enable_lfdata
+
+	; LED OFF
+	BANKSEL PORTC
+	bsf	PORTC,5
+
+	goto	main_loop
+
+begin_transmit:
+	; LED ON
+	BANKSEL PORTC
+	bcf	PORTC,5
+
+	; Wait for LVD reference to stabilise, and clear flag
+	BANKSEL LVDCON
+wait_for_lvd:
+	btfss	LVDCON,IRVST
+	goto	wait_for_lvd
+
+	; clear LVD flag 
+	BANKSEL PIR1
+	bcf	PIR1,LVDIF
+
+	; Wait for external oscillator
+	BANKSEL OSCCON
+wait_for_osc:
+	btfss	OSCCON,OSTS
+	goto	wait_for_osc
+
+	; Output a single ID token
+	call	transmit_id
+
+	; Wait a bit for LED
+	movlw	0
+spin_wait:
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	sublw	0x0
+	xorlw	0xff
+	btfss	STATUS,Z
+	goto	spin_wait
+	
+	; LED OFF
+	BANKSEL PORTC
+	bsf	PORTC,5
+
 	goto	main_loop
 
 
@@ -634,16 +703,32 @@ enable_lfdata:
 	return
 
 
-; FUNCTION: enable_wakeup_4ms
-; Enable ~4ms wakeup via watchdog timer
-enable_wakeup_4ms
+; FUNCTION: disable_lfdata
+; Disable ioca1 (LFDATA interrupt) and clear any pending ioca
+; Note: will enable GIE, PEIE, INTE if not already set
+disable_lfdata:
+	movlw	0x00
+	BANKSEL	IOCA
+	movwf	IOCA
+	movlw	0xd0
+	movwf	INTCON
+	movlw	0xd0
+	movwf	INTCON
+	BANKSEL	PORTA
+	movf	PORTA, W
+	bcf	INTCON, RAIF
+	return
+
+; FUNCTION: enable_wakeup_1s
+; Enable ~1s wakeup via watchdog timer
+enable_wakeup_1s
 	clrwdt
-	; WDT Prescale: 1:4
-	movlw	0xa
+	; WDT Prescale: 1:64
+	movlw	0xe
 	BANKSEL	OPTION_REG
 	movwf	OPTION_REG
-	; WDT On, period = 1:32
-	movlw	0x1
+	; WDT On, period = 1:512 (~16ms)
+	movlw	0x9
 	BANKSEL	WDTCON
 	movwf	WDTCON
 	return
