@@ -53,6 +53,15 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# gputils
+*.lst
+*.cod
+*_orig.hex
+altfw/*.hex
+
+# vim
+.*.swp
+
 # Kicad
 
 # Temporary files
