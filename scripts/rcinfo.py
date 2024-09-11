@@ -1,39 +1,10 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
 #
-# usage: rcpatch firmware.hex [idno]
+# usage: rcinfo
 #
-# Re-program an attached RC transponder with new firmware,
-# and the ID number provided. If ID is omitted, use
-# ID from existing firmware or a randomly chosen ID between
-# 65536 and 131072.
+# Read attached transponder and display info
 #
-# Note: This script generates the ID block and patches the
-# firmware before writing. If an ID block is not found in
-# the new firmware image, the script will abort with an error.
-#
-# ID block example, transponder ID=93388 (0x016ccc):
-#
-# 0198: 309c movlw 0x9c
-# 0199: 008e movwf TMR1L ; reg: 0x00e
-# 019a: 30ff movlw 0xff
-# 019b: 008f movwf TMR1H ; reg: 0x00f
-# 019c: 00a3 movwf 0x23 ; reg: 0x023
-# 019d: 3001 movlw 0x01
-# 019e: 00c2 movwf 0x42 ; reg: 0x042
-# 019f: 306c movlw 0x6c
-# 01a0: 00c1 movwf 0x41 ; reg: 0x041
-# 01a1: 30cc movlw 0xcc
-# 01a2: 00c0 movwf 0x40 ; reg: 0x040
-# 01a3: 3000 movlw 0x00
-# 01a4: 00c3 movwf 0x43 ; reg: 0x043
-# 01a5: 3003 movlw 0x03
-# 01a6: 00c4 movwf 0x44 ; reg: 0x044
-# [...]
-# 01d3: 3002 movlw 0x02
-# 01d4: 00db movwf 0x5b ; reg: 0x05b
-# 01d5: 3002 movlw 0x02
-# 01d6: 00dc movwf 0x5c ; reg: 0x05c
 
 import sys
 import os
@@ -42,7 +13,6 @@ import logging
 import subprocess
 from struct import unpack, pack
 from tempfile import NamedTemporaryFile
-from secrets import randbits
 
 OBJCOPY = 'objcopy'
 IPECMD = 'ipecmd'
@@ -50,11 +20,13 @@ MPLABLOG = 'MPLABXLog.xml'
 
 # Set POWER=True to power device from pickit programmer.
 # This option is required for programming ID Locations
+#
+# Warning: Remove battery before powering device from programmer
 POWER = True
 IPEARGS = ('-TPPK4', '-P16F639')
 
-_log = logging.getLogger('rcpatch')
-_log.setLevel(logging.DEBUG)
+_log = logging.getLogger('rcinfo')
+_log.setLevel(logging.INFO)
 
 
 def _reflect(dat, width):
@@ -216,31 +188,6 @@ def read_idlocs(idlocs):
 def main():
     logging.basicConfig()
 
-    fwfile = None
-    idno = None
-    if len(sys.argv) == 3:
-        try:
-            idno = int(sys.argv[2], base=0)
-            maskid = idno & 0xfffff
-            if maskid != idno:
-                idno = maskid
-                _log.warning('ID number truncated to %d (0x%05x)', idno, idno)
-        except Exception as e:
-            pass
-        if idno is None:
-            print('Usage: rcpatch firmware.hex [idno]')
-            return -1
-
-    if len(sys.argv) >= 2:
-        if os.path.exists(sys.argv[1]):
-            fwfile = os.path.realpath(sys.argv[1])
-        else:
-            print('Firmware image file not found')
-            return -1
-    else:
-        print('Usage: rcpatch firmware.hex [idno]')
-        return -1
-
     # check for required tools
     if shutil.which(OBJCOPY) is None:
         _log.error('Missing objcopy')
@@ -258,38 +205,13 @@ def main():
 
     tmpf = {}
     try:
-        # read in firmware image
-        tmpf['nbin'] = NamedTemporaryFile(suffix='.bin',
-                                          prefix='t_',
-                                          dir='.',
-                                          delete=False)
-        tmpf['nbin'].close()
-        _log.debug('Reading firmware image')
-        subprocess.run(
-            (OBJCOPY, '-Iihex', '-Obinary', fwfile, tmpf['nbin'].name),
-            check=True,
-            capture_output=True)
-        new_bin = None
-        with open(tmpf['nbin'].name, 'rb') as f:
-            new_bin = f.read()
-        new_prog = list(unpack('<2048H', new_bin[0:0x1000]))
-        new_cfg = unpack('<H', new_bin[0x400e:0x4010])[0]
-        new_idl = unpack('<4H', new_bin[0x4000:0x4008])
-        _log.debug('Configuration Word = 0x%04x', new_cfg)
-        _log.debug('ID Locations: %r (%s)', read_idlocs(new_idl), ', '.join(
-            (hex(w) for w in new_idl)))
-        new_idx = find_idblock(new_prog)
-        if new_idx is None:
-            raise RuntimeError('Firmware ID block not found')
-        _log.debug('Firmware ID block offset: 0x%04x', new_idx)
-
         # Read target transponder memory
         tmpf['thex'] = NamedTemporaryFile(suffix='.hex',
                                           prefix='t_',
                                           dir='.',
                                           delete=False)
         tmpf['thex'].close()
-        _log.debug('Reading old firmware from target')
+        _log.debug('Reading firmware from target')
         ipeargs = [ipecmd]
         ipeargs.extend(IPEARGS)
         if POWER:
@@ -314,71 +236,34 @@ def main():
             orig_bin = f.read()
         orig_prog = unpack('<2048H', orig_bin[0:0x1000])
         orig_idl = unpack('<4H', orig_bin[0x4000:0x4008])
-        _log.debug('ID Locations: %r (%s)', read_idlocs(orig_idl), ', '.join(
+        orig_vers = read_idlocs(orig_idl)
+        _log.debug('ID Locations: %r (%s)', orig_vers, ', '.join(
             (hex(w) for w in orig_idl)))
         orig_idno = None
         orig_idx = find_idblock(orig_prog)
         if orig_idx is not None:
             _log.debug('Target ID block offset: 0x%04x', orig_idx)
+            if orig_idx == 0x0198:
+                _log.info('Chronelec (ID@0x0198)')
+            elif orig_idx == 0x197:
+                _log.info('Chronelec "Track" (ID@0x0197)')
+            else:
+                _log.info('%s (ID@0x%04x)', orig_vers, orig_idx)
             orig_idno = orig_prog[orig_idx + 9] & 0xff
             orig_idno |= ((orig_prog[orig_idx + 7] & 0xff) << 8)
             orig_idno |= ((orig_prog[orig_idx + 5] & 0xff) << 16)
-            _log.debug('Target old ID: %d (0x%05x)', orig_idno, orig_idno)
+            _log.info('ID: %d (0x%05x)', orig_idno, orig_idno)
         else:
-            _log.warning('Target ID block not found')
-
-        # Backup old firmware
-        if orig_idno is not None:
-            backupname = '%d_orig.hex' % (orig_idno)
-            if not os.path.exists(backupname):
-                os.rename(tmpf['thex'].name, backupname)
-                _log.debug('Saved original firmware to %s', backupname)
-
-        # Prepare new ID block
-        if idno is None:
-            idno = orig_idno
-        if idno is None:
-            _log.debug('Using random ID')
-            idno = 0x10000 + randbits(16)
-
-        _log.debug('Creating new ID: %d (0x%05x)', idno, idno)
-        idblock = genid(idno)
-        _log.debug('%d - %s', idno, bytes(idblock).hex())
-
-        # patch firmware image with transponder id block
-        _log.debug('Patching ID block @ 0x%04x', new_idx)
-        i = 0
-        for sym in idblock:
-            # clear bits
-            new_prog[new_idx + 5 + i] &= 0xff00
-            # copy in new bits
-            new_prog[new_idx + 5 + i] |= sym
-            i += 2
-        tmpf['phex'] = NamedTemporaryFile(suffix='.hex',
-                                          prefix='t_',
-                                          mode='w',
-                                          dir='.',
-                                          delete=False)
-        tmpf['phex'].write(pic16f639_hex(new_prog, new_cfg, new_idl))
-        tmpf['phex'].close()
-
-        # Write patched firmware back to transponder
-        ipeargs = [ipecmd]
-        ipeargs.extend(IPEARGS)
-        if POWER:
-            ipeargs.append('-W')
-        ipeargs.extend(('-M', '-F' + tmpf['phex'].name))
-        _log.debug('Writing new firmware to target')
-        subprocess.run(ipeargs, check=True, capture_output=True)
+            _log.info('%s (No ID)', orig_vers)
 
     except subprocess.CalledProcessError as e:
         _log.debug('Error running command %s (%d), Output: \n%s', e.cmd,
                    e.returncode, e.output.decode('utf-8', 'replace'))
-        _log.error('Update aborted')
+        _log.error('Info aborted')
         return -2
     except Exception as e:
         _log.debug('%s: %s', e.__class__.__name__, e)
-        _log.error('Update aborted')
+        _log.error('Info aborted')
         return -1
     finally:
         for t in tmpf:
@@ -388,7 +273,7 @@ def main():
         if os.path.exists(MPLABLOG):
             _log.debug('Remove MPLAB log')
             os.unlink(MPLABLOG)
-    _log.info('Target updated OK')
+    _log.debug('Done')
     return 0
 
 

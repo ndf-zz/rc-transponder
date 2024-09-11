@@ -1,21 +1,29 @@
 # Helper Scripts
 
+
 ## rcpatch.py
 
-Update transponder firmware, retaining ID block. For example:
+Update transponder firmware, retaining original ID:
 
 	$ ./rcpatch.py firmware.hex
-	[...]
-	DEBUG:rcpatch:Found ID block at offset: 0x198
-	DEBUG:rcpatch:93388 - 016ccc0003040704040205050205020305040403040502020304050202
-	DEBUG:rcpatch:Saved original firmware to 93388_orig.hex
-	[...]
-	Device Type:PIC16F639
-	Program Succeeded.
-	Operation Succeeded
 
-Note: In order to erase ID Locations, a 5V VDD is required. Set
-constant variable "POWER" to supply target with 5V during programming.
+Supply optional number to override the transponder's ID, eg:
+
+	$ ./rcpatch.py firmware.hex 123456
+
+Note: In order to erase ID Locations, a 5V VDD
+is required. Set constant variable "POWER" to supply
+target with 5V during programming.
+
+
+## rcinfo.py
+
+Read firmware from transponder, display
+version and ID number. For example:
+
+	$ ./rcinfo.py 
+	INFO:rcinfo:Chronelec (ID@0x0198)
+	INFO:rcinfo:ID: 93409 (0x16ce1)
 
 
 ## ipecmd
