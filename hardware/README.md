@@ -122,3 +122,20 @@ LED/LFDATA and LED/DAT on reception of valid activation. LFDATA
 noise after trigger bit is due to AFE reconfiguration out of reset.
 Transmit sequence begins about 7ms after wakeup, the first token
 is sent about 2ms later.
+
+### Prolonged Activation
+
+![Road LED Tx](road_tx.png "Road LED/Tx")
+![Track LED Tx](track_tx.png "Track LED/Tx")
+
+When subjected to prolonged activation, the original transponder
+will transmit and then "sleep" until removed from the loop.
+Note that even though the LED remains lit, the transponder
+transmits nothing during the final ~200ms.
+
+The track variant was supposed to address transponder inactivity
+when subjected to prolonged or repeated activation. The second
+measurement shows that even though the transponder wakes up
+and re-transmits, the track transponder still has a ~200ms inactive
+period between wake-ups.
+
