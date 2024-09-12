@@ -124,7 +124,7 @@ def genid(idno):
         idblock.append(idtoken(bv >> 4))
         idblock.append(idtoken(bv >> 2))
         idblock.append(idtoken(bv))
-    idblock.extend((2, 2))
+    idblock.extend((3, 2))
     return idblock
 
 
@@ -176,19 +176,19 @@ def pic16f639_hex(program=None, config_word=None, idlocations=None):
 def find_idblock(fw):
     """Find ID block pattern in fw"""
     idx = None
-    pat = (0x309c, 0x008e, 0x30ff, 0x008f, 0x00a3)
+    pat = (0x00c2, 0x00c1, 0x00c0, 0x00c3, 0x00c4)
     i = 0
     j = 0
     while idx is None:
         try:
             k = fw.index(pat[j], i)
             if j > 0:
-                if k - i == j:
+                if k - i == (2 * j):
                     j += 1
                     if j == len(pat):
-                        idx = i
+                        idx = i - 1
                 else:
-                    i += j
+                    i += (2 * j)
                     j = 0
             else:
                 j = 1
@@ -320,9 +320,9 @@ def main():
         orig_idx = find_idblock(orig_prog)
         if orig_idx is not None:
             _log.debug('Target ID block offset: 0x%04x', orig_idx)
-            orig_idno = orig_prog[orig_idx + 9] & 0xff
-            orig_idno |= ((orig_prog[orig_idx + 7] & 0xff) << 8)
-            orig_idno |= ((orig_prog[orig_idx + 5] & 0xff) << 16)
+            orig_idno = orig_prog[orig_idx + 4] & 0xff
+            orig_idno |= ((orig_prog[orig_idx + 2] & 0xff) << 8)
+            orig_idno |= ((orig_prog[orig_idx] & 0xff) << 16)
             _log.debug('Target old ID: %d (0x%05x)', orig_idno, orig_idno)
         else:
             _log.warning('Target ID block not found')
@@ -350,9 +350,9 @@ def main():
         i = 0
         for sym in idblock:
             # clear bits
-            new_prog[new_idx + 5 + i] &= 0xff00
+            new_prog[new_idx + i] &= 0xff00
             # copy in new bits
-            new_prog[new_idx + 5 + i] |= sym
+            new_prog[new_idx + i] |= sym
             i += 2
         tmpf['phex'] = NamedTemporaryFile(suffix='.hex',
                                           prefix='t_',

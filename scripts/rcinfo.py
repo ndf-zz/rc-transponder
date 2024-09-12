@@ -26,7 +26,7 @@ POWER = True
 IPEARGS = ('-TPPK4', '-P16F639')
 
 _log = logging.getLogger('rcinfo')
-_log.setLevel(logging.INFO)
+_log.setLevel(logging.DEBUG)
 
 
 def _reflect(dat, width):
@@ -148,19 +148,19 @@ def pic16f639_hex(program=None, config_word=None, idlocations=None):
 def find_idblock(fw):
     """Find ID block pattern in fw"""
     idx = None
-    pat = (0x309c, 0x008e, 0x30ff, 0x008f, 0x00a3)
+    pat = (0x00c2, 0x00c1, 0x00c0, 0x00c3, 0x00c4)
     i = 0
     j = 0
     while idx is None:
         try:
             k = fw.index(pat[j], i)
             if j > 0:
-                if k - i == j:
+                if k - i == (2 * j):
                     j += 1
                     if j == len(pat):
-                        idx = i
+                        idx = i - 1
                 else:
-                    i += j
+                    i += (2 * j)
                     j = 0
             else:
                 j = 1
@@ -243,15 +243,15 @@ def main():
         orig_idx = find_idblock(orig_prog)
         if orig_idx is not None:
             _log.debug('Target ID block offset: 0x%04x', orig_idx)
-            if orig_idx == 0x0198:
-                _log.info('Chronelec (ID@0x0198)')
-            elif orig_idx == 0x197:
-                _log.info('Chronelec "Track" (ID@0x0197)')
+            if orig_idx == 0x019d:
+                _log.info('Chronelec RC (ID@0x019d)')
+            elif orig_idx == 0x19c:
+                _log.info('Chronelec "Track" (ID@0x019c)')
             else:
                 _log.info('%s (ID@0x%04x)', orig_vers, orig_idx)
-            orig_idno = orig_prog[orig_idx + 9] & 0xff
-            orig_idno |= ((orig_prog[orig_idx + 7] & 0xff) << 8)
-            orig_idno |= ((orig_prog[orig_idx + 5] & 0xff) << 16)
+            orig_idno = orig_prog[orig_idx + 4] & 0xff
+            orig_idno |= ((orig_prog[orig_idx + 2] & 0xff) << 8)
+            orig_idno |= ((orig_prog[orig_idx] & 0xff) << 16)
             _log.info('ID: %d (0x%05x)', orig_idno, orig_idno)
         else:
             _log.info('%s (No ID)', orig_vers)
