@@ -22,6 +22,7 @@ help:
 	@echo " dtrn            build dtrn and program transponder"
 	@echo " info            read transponder info"
 	@echo " erase           bulk erase transponder"
+	@echo " revert          revert to Chronelec firmware"
 	@echo " requires        install development dependencies"
 	@echo " clean           remove intermediate files"
 	@echo
@@ -44,6 +45,10 @@ dtrn: dtrn.hex
 .PHONY: info
 info:
 	$(RCINFO)
+
+.PHONY: revert
+revert:
+	$(RCPATCH) ../firmware/93388.hex
 
 .PHONY: erase
 erase:

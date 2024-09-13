@@ -36,7 +36,6 @@
 
 
 ; Registers
-TX_TML	equ	0x23		; TX TMR1L value in ID block
 IDBLOCK	equ	0x40		; ID Block base register
 BATTLVL	equ	0x5b		; Low battery warning register
 SPI_HI	equ	0x60		; AFE SPI request high bits
@@ -175,7 +174,7 @@ reset_init:
 	movlw	0x07
 	movwf	WPUDA
 
-	; Clamp voltage referece to VSS
+	; Clamp voltage reference to VSS
 	movlw	0x20
 	movwf	VRCON
 
@@ -239,12 +238,7 @@ led_off:
 ; FUNCTION: transmit_id
 ; Copy ID block into ram registers, then transmit by gating CCLK via C0
 transmit_id:
-	BANKSEL	TMR1L
-	movlw	0x9c
-	movwf	TMR1L
-	movlw	0xff
-	movwf	TMR1H
-	movwf	TX_TML
+	BANKSEL	IDBLOCK
 	movlw	0x0f
 	movwf	0x42
 	movlw	0xff

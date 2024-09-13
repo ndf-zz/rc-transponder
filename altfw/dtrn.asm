@@ -2,7 +2,7 @@
 ; Chronelec RC transponder - Alternative Firmware
 ;
 ; DISCtrain Track Transponder
-; Date: 2024-09-11
+; Date: 2024-09-13
 ; Version: 1.0
 ;
 
@@ -35,7 +35,6 @@
 
 
 ; Registers
-TX_TML	equ	0x23		; TX TMR1L value in ID block
 IDBLOCK	equ	0x40		; ID Block base register
 BATTLVL	equ	0x5b		; Low battery warning register
 SPI_HI	equ	0x60		; AFE SPI request high bits
@@ -53,11 +52,16 @@ AFE_SR7 equ	0x6c		; AFE Status Register 7
 PRT_CNT equ	0x70		; Parity check counter
 PRT_SUM equ	0x71		; Parity ones
 PRT_TMP equ	0x72		; Parity temp value
+LF_CNT	equ	0x77		; Count of continuous LF triggers
+TMR_DC	equ	0x78		; Timer delay counter
+TMR_DL	equ	0x79		; Timer delay low bits
+TMR_DH	equ	0x7a		; Timer delay high bits
+LFSR_R	equ	0x7b		; LFSR shift register
 TX_CNT	equ	0x7c		; Transmit counter
 SFLAGS	equ	0x7d		; Runtime flags
 AFEERR	equ	0x1		; AFE Parity error flag
 LFDATA	equ	0x2		; LFDATA activity flag
-INTRET	equ	0x3		; Interrupt handler called
+TXACT	equ	0x4		; Transmit timer active
 TMP_W	equ	0x7e		; W register copy
 TMP_S	equ	0x7f		; STATUS register copy (swapped)
 
@@ -98,7 +102,6 @@ vector_int:
 	goto	handle_timer_overflow
 
 interrupt_return:
-	bsf	SFLAGS,INTRET
 	swapf	TMP_S, W
 	movwf	STATUS
 	swapf	TMP_W, F
@@ -118,12 +121,10 @@ handle_ra2int:
 ; Respond to AFE demodulated data on LFDATA input
 handle_lfdata:
 	bcf	INTCON, RAIF
-	; Read PORTA to clear ioca1
 	BANKSEL PORTA
-	btfss	PORTA,1
-	goto	clear_raif
+	movf	PORTA, W
 	bsf	SFLAGS, LFDATA
-clear_raif:
+
 	; Clear RAIF in case it was set while reading PORTA
 	bcf	INTCON, RAIF
 	goto	interrupt_return
@@ -131,6 +132,79 @@ clear_raif:
 
 ; ISR Sub: handle_timer_overflow
 handle_timer_overflow:
+	; Wait for LVD reference to stabilise, and clear flag
+	BANKSEL LVDCON
+wait_for_lvd:
+	btfss	LVDCON,IRVST
+	goto	wait_for_lvd
+
+	; Clear LVD flag
+	BANKSEL PIR1
+	bcf	PIR1,LVDIF
+
+	; Wait for external oscillator in case still waking up
+	BANKSEL OSCCON
+wait_for_osc:
+	btfss	OSCCON, OSTS
+	goto	wait_for_osc
+
+	; LED OFF
+	BANKSEL	PORTC
+	bsf	PORTC, 5
+
+	; Transmit ID if LF_CNT < 32
+	movlw	0x20
+	subwf	LF_CNT, W
+	btfss	STATUS, Z
+	call	transmit_id
+	incf	TX_CNT, F
+
+	; Check for new activation
+	btfss	SFLAGS, LFDATA
+	goto	check_tx_finish
+	bcf	SFLAGS, LFDATA
+
+	; If There's been a pause >~16 beacons, reset LF_CNT
+	movf	TX_CNT, W
+	sublw	0x10
+	btfss	STATUS, C
+	clrf	LF_CNT
+	clrf	TX_CNT
+	incf	LF_CNT, F
+	movlw	0x21
+	subwf	LF_CNT, W
+	btfss	STATUS, Z
+	goto	check_tx_finish
+saturate_lf_cnt:
+	movlw	0x20
+	movwf	LF_CNT
+
+
+check_tx_finish:
+	; Send up to 80 beacons after activation ends
+	movlw	0x50
+	subwf	TX_CNT, W
+	btfss	STATUS, Z
+	goto	transmit_reschedule
+
+transmission_end:
+	; Flag transmission end and disable timer
+	clrf	LF_CNT
+	bcf	SFLAGS, TXACT
+	call	disable_timer
+	goto	timer_end
+
+transmit_reschedule:
+	; Schedule next timer with LFSR delay time ~3-10ms
+	call	update_lfsr
+	call	update_timer
+
+	; LED ON
+	BANKSEL	PORTC
+	bcf	PORTC, 5
+
+timer_end:
+	; Clear timer flag and return
 	BANKSEL PIR1
 	bcf	PIR1, TMR1IF
 	goto	interrupt_return
@@ -175,7 +249,7 @@ reset_init:
 	movlw	0x07
 	movwf	WPUDA
 
-	; Clamp voltage referece to VSS
+	; Clamp voltage reference to VSS
 	movlw	0x20
 	movwf	VRCON
 
@@ -200,40 +274,53 @@ zeromem:
 	btfss	STATUS, Z
 	goto	zeromem
 
-	; Configure AFE and disable lfdata int, enable GIE, PEIE, INTE
+	; Configure AFE
 	call	configure_afe
-	nop
-	nop
-	call	enable_lfdata
 
-	; Disable wakeup via wdt
+	; Prepare for sleep
+	call	init_lfsr
 	call	disable_wakeup
+	call	disable_timer
+	call	enable_lfdata
 
 main_loop:
 	sleep
-
-	; Executed before branch to int handler on wakeup
-	bcf	SFLAGS,INTRET
-
+	nop
 
 	; Check for AFE error condition
-	btfsc	SFLAGS,AFEERR
+	btfsc	SFLAGS, AFEERR
 	goto	reset_init
 
-	; w-i-p
+	; If LFDATA set, intiate transmit
+	btfss	SFLAGS, LFDATA
+	goto	main_loop
 
+	; Skip to transfer is already in progress
+	btfsc	SFLAGS, TXACT
+	goto	wait_for_transfer
+
+	; LED ON
+	BANKSEL	PORTC
+	bcf	PORTC, 5
+
+	bsf	SFLAGS, TXACT
+	call	enable_timer
+	call	update_lfsr
+	call	update_timer
+wait_for_transfer:
+	btfsc	SFLAGS, TXACT
+	goto	wait_for_transfer
+
+	; LED OFF
+	BANKSEL	PORTC
+	bsf	PORTC, 5
 	goto	main_loop
 
 
 ; FUNCTION: transmit_id
 ; Copy ID block into ram registers, then transmit by gating CCLK via C0
 transmit_id:
-	BANKSEL	TMR1L
-	movlw	0x9c
-	movwf	TMR1L
-	movlw	0xff
-	movwf	TMR1H
-	movwf	TX_TML
+	BANKSEL	IDBLOCK
 	movlw	0x0f
 	movwf	0x42
 	movlw	0xff
@@ -305,215 +392,236 @@ start_tx:
 	btfsc	STATUS, Z
 	goto	tx_preamble
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 pre_sym:
 	decfsz	0x43, F
 	goto	pre_sym
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
 tx_preamble:
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_00:
 	decfsz	0x44, F
 	goto	tx_sym_00
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_01:
 	decfsz	0x45, F
 	goto	tx_sym_01
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_02:
 	decfsz	0x46, F
 	goto	tx_sym_02
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_03:
 	decfsz	0x47, F
 	goto	tx_sym_03
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_04:
 	decfsz	0x48, F
 	goto	tx_sym_04
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_05:
 	decfsz	0x49, F
 	goto	tx_sym_05
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_06:
 	decfsz	0x4a, F
 	goto	tx_sym_06
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_07:
 	decfsz	0x4b, F
 	goto	tx_sym_07
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_08:
 	decfsz	0x4c, F
 	goto	tx_sym_08
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_09:
 	decfsz	0x4d, F
 	goto	tx_sym_09
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_10:
 	decfsz	0x4e, F
 	goto	tx_sym_10
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_11:
 	decfsz	0x4f, F
 	goto	tx_sym_11
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_12:
 	decfsz	0x50, F
 	goto	tx_sym_12
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_13:
 	decfsz	0x51, F
 	goto	tx_sym_13
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_14:
 	decfsz	0x52, F
 	goto	tx_sym_14
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_15:
 	decfsz	0x53, F
 	goto	tx_sym_15
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_16:
 	decfsz	0x54, F
 	goto	tx_sym_16
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_17:
 	decfsz	0x55, F
 	goto	tx_sym_17
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_18:
 	decfsz	0x56, F
 	goto	tx_sym_18
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_19:
 	decfsz	0x57, F
 	goto	tx_sym_19
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_20:
 	decfsz	0x58, F
 	goto	tx_sym_20
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_21:
 	decfsz	0x59, F
 	goto	tx_sym_21
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_22:
 	decfsz	0x5a, F
 	goto	tx_sym_22
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_23:
 	decfsz	0x5b, F
 	goto	tx_sym_23
-	bcf	PORTC,0
+	bcf	PORTC, 0
 	nop
 	nop
-	bsf	PORTC,0
+	bsf	PORTC, 0
 	nop
 tx_sym_24:
 	decfsz	0x5c, F
 	goto	tx_sym_24
-	bcf	PORTC,0
+	bcf	PORTC, 0
 
+	return
+
+
+; FUNCTION: init_lfsr
+; Initialise LFSR Register and then update
+init_lfsr:
+	movlw	0x01
+	movwf	LFSR_R
+
+
+; FUNCTION: update_lfsr
+; Updte LFSR and return next value in W
+update_lfsr:
+	bcf	STATUS, C
+	rrf	LFSR_R, F
+	btfss	STATUS, C
+	goto	lfsr_return
+	movlw	0xfa
+	xorwf	LFSR_R, F
+lfsr_return:
+	movf	LFSR_R, W
 	return
 
 
@@ -638,6 +746,58 @@ disable_lfdata:
 	movf	PORTA, W
 	bcf	INTCON, RAIF
 	return
+
+
+; FUNCTION: update_timer
+; Set TMR1 for a delay of (W&0x7)+3 ms
+update_timer:
+	andlw	0x7
+	addlw	0x3
+	movwf	TMR_DC
+	movlw	0xff
+	movwf	TMR_DH
+	movwf	TMR_DL
+
+subtract_1ms:
+	movlw	0x66
+	subwf	TMR_DL, F
+	btfss	STATUS, C
+	decf	TMR_DH, F
+	decfsz	TMR_DC, F
+	goto	subtract_1ms
+
+	BANKSEL	TMR1H
+	movf	TMR_DH, W
+	movwf	TMR1H
+	movf	TMR_DL, W
+	movwf	TMR1L
+	return
+
+
+; FUNCTION: enable_timer
+; Enable Timer1 and interrupt
+enable_timer:
+	BANKSEL	TMR1L
+	clrf	TMR1L
+	clrf	TMR1H
+	movlw	0x31
+	movwf	T1CON
+	BANKSEL	PIE1
+	bsf	PIE1, TMR1IE
+	return
+
+
+; FUNCTION: disable_timer
+; Disable Timer1 and interrupt
+disable_timer:
+	BANKSEL	T1CON
+	bcf	T1CON, TMR1ON
+	clrf	TMR1L
+	clrf	TMR1H
+	BANKSEL	PIE1
+	bcf	PIE1, TMR1IE
+	return
+
 
 ; FUNCTION: enable_wakeup_1s
 ; Enable ~1s wakeup via watchdog timer
