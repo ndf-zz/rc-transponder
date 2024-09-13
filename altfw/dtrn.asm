@@ -136,19 +136,18 @@ handle_timer_overflow:
 	call	update_lfsr
 	call	update_timer
 
-	; Wait for LVD reference to stabilise, and clear flag
-	BANKSEL LVDCON
-wait_for_lvd:
-	btfss	LVDCON,IRVST
-	goto	wait_for_lvd
+	; Check 3.28MHz oscillator is running and selected
+	BANKSEL	PIR1
+	bcf	PIR1, OSFIF
 
-	; Clear LVD flag
-	BANKSEL PIR1
-	bcf	PIR1,LVDIF
-
-	; Wait for external oscillator in case still waking up
-	BANKSEL OSCCON
 wait_for_osc:
+
+	; Abort in case of clock failure
+	BANKSEL	PIR1
+	btfsc	PIR1, OSFIF
+	goto	transmission_end
+
+	BANKSEL OSCCON
 	btfss	OSCCON, OSTS
 	goto	wait_for_osc
 
@@ -204,6 +203,10 @@ transmit_ledon:
 	bcf	PORTC, 5
 
 timer_end:
+	; Clear LVD flag
+	BANKSEL PIR1
+	bcf	PIR1,LVDIF
+
 	; Clear timer flag and return
 	BANKSEL PIR1
 	bcf	PIR1, TMR1IF
@@ -253,9 +256,9 @@ reset_init:
 	movlw	0x20
 	movwf	VRCON
 
-	; Enable low voltage detect @ 2.3V
+	; Enable low voltage detect @ 2.2V
 	bsf	LVDCON, LVDEN
-	movlw	0x14
+	movlw	0x13
 	movwf	LVDCON
 
 	; Set Oscillator control reg: 4MHz, External clock, source FOSC2:0
@@ -276,6 +279,14 @@ zeromem:
 
 	; Configure AFE
 	call	configure_afe
+
+	; Wait for stable LVD and clearflag
+	BANKSEL LVDCON
+wait_for_lvd:
+	btfss	LVDCON,IRVST
+	goto	wait_for_lvd
+	BANKSEL PIR1
+	bcf	PIR1,LVDIF
 
 	; Prepare for sleep
 	call	init_lfsr
