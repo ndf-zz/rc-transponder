@@ -132,6 +132,10 @@ handle_lfdata:
 
 ; ISR Sub: handle_timer_overflow
 handle_timer_overflow:
+	; Tentatively schedule next timer
+	call	update_lfsr
+	call	update_timer
+
 	; Wait for LVD reference to stabilise, and clear flag
 	BANKSEL LVDCON
 wait_for_lvd:
@@ -185,7 +189,7 @@ check_tx_finish:
 	movlw	0x50
 	subwf	TX_CNT, W
 	btfss	STATUS, Z
-	goto	transmit_reschedule
+	goto	transmit_ledon
 
 transmission_end:
 	; Flag transmission end and disable timer
@@ -194,11 +198,7 @@ transmission_end:
 	call	disable_timer
 	goto	timer_end
 
-transmit_reschedule:
-	; Schedule next timer with LFSR delay time ~3-10ms
-	call	update_lfsr
-	call	update_timer
-
+transmit_ledon:
 	; LED ON
 	BANKSEL	PORTC
 	bcf	PORTC, 5
@@ -749,17 +749,17 @@ disable_lfdata:
 
 
 ; FUNCTION: update_timer
-; Set TMR1 for a delay of (W&0x7)+3 ms
+; Set TMR1 for a delay of (W&0x7)+4 ms
 update_timer:
 	andlw	0x7
-	addlw	0x3
+	addlw	0x4
 	movwf	TMR_DC
 	movlw	0xff
 	movwf	TMR_DH
 	movwf	TMR_DL
 
 subtract_1ms:
-	movlw	0x66
+	movlw	0x65
 	subwf	TMR_DL, F
 	btfss	STATUS, C
 	decf	TMR_DH, F
