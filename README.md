@@ -35,15 +35,3 @@ for a short while.
 Both LF and HF circuits are magnetically communicated
 with a compatible Chronelec Protime decoder and loop.
 
-
-## Requirements
-
-   - python
-   - binutils
-   - MPLAB IPE + PicKitx
-   - gputils (optional)
-
-To read and reprogram a transponder, a compatible Pickit
-programmer is required along with a MPLAB IPE installation,
-python3 and objcopy. To assemble the alt firmware, gputils
-is required.

@@ -2,7 +2,7 @@
 
 ## DISCtrain - Velodrome Training Timing System
 
-[dtrc.asm](dtrn.asm) ID: 'DISC-1.0'
+[dtrn.asm](dtrn.asm) ID: 'DISC-1.0'
 
 This firmware addresses multiple operational
 issues with manufacturer-supplied transponders,
@@ -55,3 +55,22 @@ are ignored, LED flashes briefly when ID is transmitted.
 Build and install:
 
 	$ make hftest
+
+
+## Requirements
+
+To build hex images and reprogram transponders, the following
+tools are required:
+
+   - make
+   - gputils
+   - objcopy
+   - python3
+   - MPLAB IPE (version v6.20)
+   - Pickit programmer (pickit4)
+
+On a Debian system, install MPLAB IPE
+then fetch requirements with make:
+
+	$ make requires
+
