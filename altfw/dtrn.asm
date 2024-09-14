@@ -16,12 +16,12 @@
 ; Configuration Word Register
 	CONFIG	FOSC  = HS
 	CONFIG	WDTE  = OFF
-	CONFIG	PWRTE = OFF
+	CONFIG	PWRTE = ON
 	CONFIG	MCLRE = ON
 	CONFIG	CP    = OFF
 	CONFIG	CPD   = OFF
-	CONFIG	BOREN = OFF
-	CONFIG	IESO  = OFF
+	CONFIG	BOREN = NSLEEP
+	CONFIG	IESO  = ON
 	CONFIG	FCMEN = ON
 	CONFIG	WURE  = OFF
 
@@ -62,6 +62,7 @@ SFLAGS	equ	0x7d		; Runtime flags
 AFEERR	equ	0x1		; AFE Parity error flag
 LFDATA	equ	0x2		; LFDATA activity flag
 TXACT	equ	0x4		; Transmit timer active
+BODRST	equ	0x5		; Last reset was due to brown-out
 TMP_W	equ	0x7e		; W register copy
 TMP_S	equ	0x7f		; STATUS register copy (swapped)
 
@@ -135,10 +136,7 @@ handle_timer_overflow:
 	; Tentatively schedule next timer
 	call	update_lfsr
 	call	update_timer
-
-	; Check 3.28MHz oscillator is running and selected
-	BANKSEL	PIR1
-	bcf	PIR1, OSFIF
+	clrwdt
 
 wait_for_osc:
 
@@ -182,7 +180,6 @@ saturate_lf_cnt:
 	movlw	0x20
 	movwf	LF_CNT
 
-
 check_tx_finish:
 	; Send up to 80 beacons after activation ends
 	movlw	0x50
@@ -195,6 +192,10 @@ transmission_end:
 	clrf	LF_CNT
 	bcf	SFLAGS, TXACT
 	call	disable_timer
+
+	; LED OFF
+	BANKSEL	PORTC
+	bcf	PORTC, 5
 	goto	timer_end
 
 transmit_ledon:
@@ -214,19 +215,10 @@ timer_end:
 
 
 ; ISR Sub: reset_init
-; Reset routine
+; Reset/start-up routine
 reset_init:
 	; Disable interrupts
 	bcf	INTCON, GIE
-
-	; Set PORTA all input
-	movlw	0xff
-	BANKSEL TRISA
-	movwf	TRISA
-
-	; Set PORTC outputs: C0 & C5
-	movlw	0xde
-	movwf	TRISC
 
 	; Set pullups and initial outputs
 	movlw	0xff
@@ -239,9 +231,17 @@ reset_init:
 	movlw	0x07
 	movwf	CMCON0
 
+	; Set PORTA all input
+	movlw	0xff
+	BANKSEL TRISA
+	movwf	TRISA
+
+	; Set PORTC outputs: C0 & C5
+	movlw	0xde
+	movwf	TRISC
+
 	; Option reg: WDT 1:1
 	movlw	0x08
-	BANKSEL OPTION_REG
 	movwf	OPTION_REG
 
 	; Weak pull up WDA2
@@ -256,9 +256,9 @@ reset_init:
 	movlw	0x20
 	movwf	VRCON
 
-	; Enable low voltage detect @ 2.2V
+	; Enable low voltage detect @ 2.3V
 	bsf	LVDCON, LVDEN
-	movlw	0x13
+	movlw	0x14
 	movwf	LVDCON
 
 	; Set Oscillator control reg: 4MHz, External clock, source FOSC2:0
@@ -277,10 +277,13 @@ zeromem:
 	btfss	STATUS, Z
 	goto	zeromem
 
+	; Check POR/BOR for brown-out status
+	call	check_brown_out
+
 	; Configure AFE
 	call	configure_afe
 
-	; Wait for stable LVD and clearflag
+	; Wait for stable LVD and clear flag
 	BANKSEL LVDCON
 wait_for_lvd:
 	btfss	LVDCON,IRVST
@@ -295,18 +298,23 @@ wait_for_lvd:
 	call	enable_lfdata
 
 main_loop:
+	btfss	SFLAGS, LFDATA
 	sleep
 	nop
 
+	; Check for Watchdog timeout
+	btfss	STATUS, NOT_TO
+	goto	idle_timeout
+
 	; Check for AFE error condition
 	btfsc	SFLAGS, AFEERR
-	goto	reset_init
+	goto	vector_reset
 
 	; If LFDATA set, intiate transmit
 	btfss	SFLAGS, LFDATA
 	goto	main_loop
 
-	; Skip to transfer is already in progress
+	; Skip to transfer if already in progress
 	btfsc	SFLAGS, TXACT
 	goto	wait_for_transfer
 
@@ -314,15 +322,27 @@ main_loop:
 	BANKSEL	PORTC
 	bcf	PORTC, 5
 
+	; Prepare for transfer
+	bcf	PIR1, OSFIF
 	bsf	SFLAGS, TXACT
 	call	enable_timer
 	call	update_lfsr
 	call	update_timer
+	call	enable_wakeup_2s
+
 wait_for_transfer:
 	btfsc	SFLAGS, TXACT
 	goto	wait_for_transfer
 
 	; LED OFF
+	BANKSEL	PORTC
+	bsf	PORTC, 5
+	goto	main_loop
+
+idle_timeout:
+	; After a successful transmit sequence completes, clear BODRST
+	call	disable_wakeup
+	bcf	SFLAGS, BODRST
 	BANKSEL	PORTC
 	bsf	PORTC, 5
 	goto	main_loop
@@ -391,10 +411,17 @@ transmit_id:
 	movlw	0x00
 	movwf	0x5c
 
-	; Update battery flag if low voltage detected
+	; Update battery flag if BOD or low voltage detected
+check_bodrst:
+	btfss	SFLAGS, BODRST
+	goto	check_lvd
+	movlw	0x05
+	goto	update_battlvl
+check_lvd:
 	btfss	PIR1, LVDIF
 	goto	start_tx
-	movlw	0x05
+	movlw	0x04
+update_battlvl:
 	movwf	BATTLVL
 
 start_tx:
@@ -615,6 +642,28 @@ tx_sym_24:
 	return
 
 
+; FUNCTION: clear_bodstat
+; Check reset power flags for brown-out condition
+check_brown_out:
+	; Check /POR
+	BANKSEL	PCON
+	btfss	PCON, NOT_POR
+	goto	clear_bodstat
+
+	; Check /BOR
+	btfsc	PCON, NOT_BOR
+	goto	clear_bodstat
+	bsf	SFLAGS, BODRST
+	goto	cbd_end
+
+clear_bodstat:
+	bcf	SFLAGS, BODRST
+cbd_end:
+	bsf	PCON, NOT_POR
+	bsf	PCON, NOT_BOR
+	return
+
+
 ; FUNCTION: init_lfsr
 ; Initialise LFSR Register and then update
 init_lfsr:
@@ -810,16 +859,16 @@ disable_timer:
 	return
 
 
-; FUNCTION: enable_wakeup_1s
-; Enable ~1s wakeup via watchdog timer
-enable_wakeup_1s
+; FUNCTION: enable_wakeup_2s
+; Enable ~2s wakeup via watchdog timer
+enable_wakeup_2s
 	clrwdt
 	; WDT Prescale: 1:64
 	movlw	0xe
 	BANKSEL	OPTION_REG
 	movwf	OPTION_REG
-	; WDT On, period = 1:512 (~16ms)
-	movlw	0x9
+	; WDT On, period = 1:1024
+	movlw	0x0b
 	BANKSEL	WDTCON
 	movwf	WDTCON
 	return
@@ -830,6 +879,7 @@ enable_wakeup_1s
 disable_wakeup
 	BANKSEL	WDTCON
 	clrf	WDTCON
+	clrwdt
 	return
 
 
@@ -1000,5 +1050,5 @@ afe_recompute_colparity:
 	movwf	AFE_PR6
 	return
 
-	end
 
+	end

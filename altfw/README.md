@@ -10,19 +10,16 @@ particularly for use at the DISC Velodrome.
 
 Main features:
 
-   - LED is switched off during Tx bursts to better
-     utilise available battery power.
-   - Low voltage monitoring is windowed to avoid spurious
-     error messages.
+   - Battery level reporting: 1=OK, 2=Low Battery, 3=Fault
    - LF sensitivity is maintained during transmit sequence
-   - Tx dead times are eliminated.
-   - Prolonged activation suppresses Tx only while held in loop.
+   - Tx dead times are eliminated
+   - Prolonged activation suppresses Tx only while held in loop
    - Periodic (270s) wakeup/reset is eliminated - transponder
      will sleep indefinitely, waking only for valid activation
-     or error condition flagged by AFE.
+     or error condition flagged by AFE
    - Pseudorandom delays are distributed in 1ms steps from 3 to 10ms,
-     and the backoff timer is no longer used.
-   - Initial collisions due to concurrent wakeups are reduced.
+     and the backoff timer is no longer used
+   - Initial collisions due to concurrent wakeups are reduced
 
 Build and install:
 
