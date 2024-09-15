@@ -292,6 +292,7 @@ wait_for_lvd:
 	bcf	PIR1,LVDIF
 
 	; Prepare for sleep
+	call	transmit_id
 	call	init_lfsr
 	call	disable_wakeup
 	call	disable_timer
@@ -410,6 +411,10 @@ transmit_id:
 	movwf	BATTLVL
 	movlw	0x00
 	movwf	0x5c
+
+	; Return if TXACT unset
+	btfss	SFLAGS, TXACT
+	return
 
 	; Update battery flag if BOD or low voltage detected
 check_bodrst:
@@ -665,9 +670,10 @@ cbd_end:
 
 
 ; FUNCTION: init_lfsr
-; Initialise LFSR Register and then update
+; Initialise LFSR Register with ID[0:7]|0x80 and then update
 init_lfsr:
-	movlw	0x01
+	movf	IDBLOCK, W
+	iorlw	0x80
 	movwf	LFSR_R
 
 
